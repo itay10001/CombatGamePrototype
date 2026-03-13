@@ -107,23 +107,26 @@ public class PlayerController : MonoBehaviour
 
     float CalculateLandingScore()
     {
-        // Vertical component: are you looking down?
+        // Vertical: looking down = good (0), horizontal = bad (0.5), looking up = worst (1)
         float verticalAngle = Vector3.Angle(cameraHolder.forward, Vector3.down);
-        // 0 = looking straight down (good), 90 = horizontal (bad), 180 = looking up (very bad)
         float verticalScore = verticalAngle / 180f;
 
-        // Horizontal component: are you facing away from momentum?
+        // Horizontal: facing opposite to movement = good (0), same direction = bad (1)
         Vector3 moveDir = new Vector3(rb.linearVelocity.x, 0, rb.linearVelocity.z).normalized;
         Vector3 facingDir = new Vector3(transform.forward.x, 0, transform.forward.z).normalized;
         float horizontalAngle = Vector3.Angle(facingDir, moveDir);
-        // 180 = facing opposite to movement (good), 0 = facing same (bad)
         float horizontalScore = 1f - (horizontalAngle / 180f);
 
-        // Combine both — weighted equally
-        // 0 = perfect landing, 1 = terrible landing
-        return (verticalScore * 0.8f) + (horizontalScore * 0.2f);
+        // Pitch is primary, yaw can still tip you into bad territory
+        float combined = (verticalScore * 0.7f) + (horizontalScore * 0.3f);
 
+        // If pitch is good but yaw is terrible, cap at BAD not CLEAN
+        if (verticalScore < 0.33f && horizontalScore > 0.8f)
+            return Mathf.Max(combined, 0.34f);
+
+        return combined;
     }
+
 
     void OnCollisionEnter(Collision col)
     {
