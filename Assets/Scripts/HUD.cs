@@ -29,18 +29,19 @@ public class HUD : MonoBehaviour
             landingText.text = "";
         }
 
-        // Live angle display
+        // Live landing score display
         if (player != null)
         {
-            Vector3 moveDir = new Vector3(player.GetVelocity().x, 0, player.GetVelocity().z).normalized;
-            Vector3 facingDir = new Vector3(player.transform.forward.x, 0, player.transform.forward.z).normalized;
+            Vector3 vel = player.GetVelocity();
+            bool isMoving = new Vector3(vel.x, 0, vel.z).magnitude > 0.1f;
 
-            if (moveDir.magnitude > 0.1f)
+            if (isMoving)
             {
-                float angle = Vector3.Angle(facingDir, moveDir);
-                string quality = angle < 45f ? "DANGER" : angle < 90f ? "RISKY" : "GOOD";
-                angleText.text = $"Angle: {Mathf.RoundToInt(angle)}°  [{quality}]";
-                angleText.color = angle < 45f ? Color.red : angle < 90f ? Color.yellow : Color.green;
+                float score = player.GetLandingScore();
+                string quality = score < 0.33f ? "GOOD" : score < 0.66f ? "RISKY" : "DANGER";
+                Color col = score < 0.33f ? Color.green : score < 0.66f ? Color.yellow : Color.red;
+                angleText.text = $"Landing: {quality}  [{Mathf.RoundToInt(score * 100f)}%]";
+                angleText.color = col;
             }
             else
             {

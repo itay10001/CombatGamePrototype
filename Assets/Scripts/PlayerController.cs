@@ -105,39 +105,63 @@ public class PlayerController : MonoBehaviour
         isGrounded = Physics.Raycast(transform.position, Vector3.down, 1.1f);
     }
 
-    void OnCollisionEnter(Collision col)
-{
-    if (col.relativeVelocity.y > 2f)
+    float CalculateLandingScore()
     {
+        // Vertical component: are you looking down?
+        float verticalAngle = Vector3.Angle(cameraHolder.forward, Vector3.down);
+        // 0 = looking straight down (good), 90 = horizontal (bad), 180 = looking up (very bad)
+        float verticalScore = verticalAngle / 180f;
+
+        // Horizontal component: are you facing away from momentum?
         Vector3 moveDir = new Vector3(rb.linearVelocity.x, 0, rb.linearVelocity.z).normalized;
         Vector3 facingDir = new Vector3(transform.forward.x, 0, transform.forward.z).normalized;
+        float horizontalAngle = Vector3.Angle(facingDir, moveDir);
+        // 180 = facing opposite to movement (good), 0 = facing same (bad)
+        float horizontalScore = 1f - (horizontalAngle / 180f);
 
-        float angle = Vector3.Angle(facingDir, moveDir);
+        // Combine both — weighted equally
+        // 0 = perfect landing, 1 = terrible landing
+        return (verticalScore * 0.8f) + (horizontalScore * 0.2f);
 
-        // 0° = facing same as movement (faceplant) = very bad
-        // 180° = facing opposite to movement (braking) = clean
-        if (angle < 45f)
+    }
+
+    void OnCollisionEnter(Collision col)
+    {
+        if (col.relativeVelocity.y > 2f)
         {
-            landingRecovery = 1.2f;
-            rb.linearVelocity *= 0.2f;
-            hud.ShowLanding("VERY BAD LANDING");
-        }
-        else if (angle < 90f)
-        {
-            landingRecovery = 0.5f;
-            rb.linearVelocity *= 0.5f;
-            hud.ShowLanding("BAD LANDING");
-        }
-        else
-        {
-            hud.ShowLanding("CLEAN LANDING");
+            float score = CalculateLandingScore();
+
+            if (score > 0.66f)
+            {
+                landingRecovery = 1.2f;
+                rb.linearVelocity *= 0.2f;
+                hud.ShowLanding("VERY BAD LANDING");
+            }
+            else if (score > 0.33f)
+            {
+                landingRecovery = 0.5f;
+                rb.linearVelocity *= 0.5f;
+                hud.ShowLanding("BAD LANDING");
+            }
+            else
+            {
+                hud.ShowLanding("CLEAN LANDING");
+            }
         }
     }
-}
-public Vector3 GetVelocity()
-{
-    return rb.linearVelocity;
-}
 
+    public Vector3 GetVelocity()
+    {
+        return rb.linearVelocity;
+    }
 
+    public float GetLandingScore()
+    {
+        return CalculateLandingScore();
+    }
+
+    public Vector3 GetCameraForward()
+    {
+        return cameraHolder.forward;
+    }
 }
