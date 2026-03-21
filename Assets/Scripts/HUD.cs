@@ -5,6 +5,8 @@ public class HUD : MonoBehaviour
 {
     public TextMeshProUGUI landingText;
     public TextMeshProUGUI angleText;
+    public TextMeshProUGUI recoveryText;
+    public TextMeshProUGUI stunText;
 
     private float displayTimer;
     private Color currentColor;
@@ -12,7 +14,9 @@ public class HUD : MonoBehaviour
 
     void Start()
     {
-        player = FindObjectOfType<PlayerController>();
+        player = FindFirstObjectByType<PlayerController>();
+        if (recoveryText) recoveryText.gameObject.SetActive(false);
+        if (stunText) stunText.gameObject.SetActive(false);
     }
 
     void Update()
@@ -29,13 +33,13 @@ public class HUD : MonoBehaviour
             landingText.text = "";
         }
 
-        // Live landing score display
-        if (player != null)
+        // Live landing score
+        if (player != null && player.IsAirborne())
         {
             Vector3 vel = player.GetVelocity();
-            bool isMoving = new Vector3(vel.x, 0, vel.z).magnitude > 0.1f;
+            bool isFalling = vel.y < -2f;
 
-            if (isMoving)
+            if (isFalling)
             {
                 float score = player.GetLandingScore();
                 string quality = score < 0.33f ? "GOOD" : score < 0.66f ? "RISKY" : "DANGER";
@@ -48,6 +52,11 @@ public class HUD : MonoBehaviour
                 angleText.text = "";
             }
         }
+        else
+        {
+            angleText.text = "";
+        }
+
     }
 
     public void ShowLanding(string quality)
@@ -60,8 +69,41 @@ public class HUD : MonoBehaviour
             case "CLEAN LANDING": currentColor = Color.green; break;
             case "BAD LANDING": currentColor = Color.yellow; break;
             case "VERY BAD LANDING": currentColor = Color.red; break;
+            case "RECOVERY!": currentColor = Color.cyan; break;
         }
 
         landingText.color = currentColor;
+    }
+
+    public void ShowRecovery()
+    {
+        if (recoveryText)
+        {
+            recoveryText.gameObject.SetActive(true);
+            recoveryText.text = "Press E to recover!";
+            recoveryText.color = Color.yellow;
+        }
+    }
+
+    public void HideRecovery()
+    {
+        if (recoveryText)
+            recoveryText.gameObject.SetActive(false);
+    }
+
+    public void ShowStun()
+    {
+        if (stunText)
+        {
+            stunText.gameObject.SetActive(true);
+            stunText.text = "STUNNED";
+            stunText.color = Color.red;
+        }
+    }
+
+    public void HideStun()
+    {
+        if (stunText)
+            stunText.gameObject.SetActive(false);
     }
 }

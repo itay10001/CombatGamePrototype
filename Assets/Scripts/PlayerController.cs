@@ -15,18 +15,22 @@ public class PlayerController : MonoBehaviour
     [Header("Landing")]
     public float badLandingThreshold = 0.33f;
     public float veryBadLandingThreshold = 0.66f;
+    public float dangerFallSpeed = 8f;
+    public float recoveryWindow = 0.6f;
 
     [Header("Wall Running")]
-    public float wallRunTime = 1.5f;
-    public float wallGravity = 15f;
+    public float wallGravity = 20f;
     public float wallJumpForce = 12f;
     public float wallJumpUpForce = 12f;
     public float wallCheckDistance = 0.8f;
-    public float wallOrientSpeed = 8f;
+    public float wallOrientSpeed = 10f;
 
     private Rigidbody rb;
     private Transform cameraHolder;
-    private float verticalLook;
+    public float verticalLook;
+    public float cameraRoll;
+    private float targetCameraRoll = 0f;
+
     private bool isGrounded;
     private bool isAirborne;
     private float dashTimer;
@@ -35,31 +39,42 @@ public class PlayerController : MonoBehaviour
     private HUD hud;
     private bool accessibilityMode = false;
 
-    // Wall running
     private bool isWallRunning;
-    private float wallRunTimer;
     private Vector3 wallNormal;
     private bool isOnWall;
-    private Quaternion targetPlayerRotation;
-    private Quaternion normalPlayerRotation;
+
+    private bool recoveryAvailable = false;
+    private bool recoveryUsed = false;
+    private float recoveryTimer = 0f;
+    private bool isStunned = false;
+    private float stunTimer = 0f;
+    private bool hasLanded = false;
+
+    // Save score while falling so it's accurate at landing
+    private float savedLandingScore = 0f;
 
     void Start()
     {
         rb = GetComponent<Rigidbody>();
         cameraHolder = transform.Find("CameraHolder");
-        hud = FindObjectOfType<HUD>();
+        hud = FindFirstObjectByType<HUD>();
         Cursor.lockState = CursorLockMode.Locked;
-        normalPlayerRotation = transform.rotation;
     }
 
     void Update()
     {
-        MouseLook();
         HandleJump();
         HandleDash();
         HandleRecovery();
-        HandleWallRun();
+        HandleStun();
+        HandleRecoveryInput();
+        CheckDangerousLanding();
+        MouseLook();
         dashTimer -= Time.deltaTime;
+
+        // Continuously save score while falling
+        if (isAirborne && !isWallRunning)
+            savedLandingScore = CalculateLandingScore();
 
         if (Input.GetKeyDown(KeyCode.T))
             accessibilityMode = !accessibilityMode;
@@ -69,94 +84,96 @@ public class PlayerController : MonoBehaviour
     {
         HandleMovement();
         CheckGrounded();
-        CheckWall();
+        ApplyWallGravity();
     }
 
     void MouseLook()
     {
-        if (landingRecovery > 0) return;
+        cameraRoll = Mathf.Lerp(cameraRoll, targetCameraRoll, Time.deltaTime * wallOrientSpeed);
+
+        if (landingRecovery > 0 || isStunned)
+        {
+            verticalLook = Mathf.Lerp(verticalLook, 0f, Time.deltaTime * 3f);
+            cameraHolder.localRotation = Quaternion.Euler(verticalLook, 0, cameraRoll);
+            return;
+        }
 
         float mouseX = Input.GetAxis("Mouse X") * mouseSensitivity;
         float mouseY = Input.GetAxis("Mouse Y") * mouseSensitivity;
 
-        if (isWallRunning)
-        {
-            // On wall: yaw rotates along wall surface, pitch is normal
-            transform.Rotate(0, mouseX, 0);
-            verticalLook -= mouseY;
+        transform.Rotate(0, mouseX, 0);
+        verticalLook -= mouseY;
+
+        if (!isAirborne || accessibilityMode)
             verticalLook = Mathf.Clamp(verticalLook, -80f, 80f);
-            cameraHolder.localRotation = Quaternion.Euler(verticalLook, 0, 0);
-        }
-        else if (!isAirborne || accessibilityMode)
-        {
-            transform.Rotate(0, mouseX, 0);
-            verticalLook -= mouseY;
-            verticalLook = Mathf.Clamp(verticalLook, -80f, 80f);
-            cameraHolder.localRotation = Quaternion.Euler(verticalLook, 0, 0);
-        }
-        else
-        {
-            transform.Rotate(0, mouseX, 0);
-            cameraHolder.localRotation *= Quaternion.Euler(-mouseY, 0, 0);
-            verticalLook = cameraHolder.localEulerAngles.x;
-            if (verticalLook > 180f) verticalLook -= 360f;
-        }
+
+        cameraHolder.localRotation = Quaternion.Euler(verticalLook, 0, cameraRoll);
     }
 
-    void HandleMovement()
+   void HandleMovement()
+{
+    if (landingRecovery > 0 || isStunned) return;
+
+    float h = Input.GetAxisRaw("Horizontal");
+    float v = Input.GetAxisRaw("Vertical");
+    float speed = moveSpeed;
+    if (Input.GetKey(KeyCode.LeftShift)) speed *= sprintMultiplier;
+
+    if (isWallRunning)
     {
-        if (landingRecovery > 0) return;
+        Vector3 forward = Vector3.ProjectOnPlane(cameraHolder.forward, wallNormal).normalized;
+        Vector3 right = Vector3.ProjectOnPlane(cameraHolder.right, wallNormal).normalized;
+        Vector3 dir = (right * h + forward * v).normalized;
+        rb.linearVelocity = dir * speed;
+    }
+    else if (isAirborne)
+    {
+        // Air movement — fully camera relative so flipping changes directions
+        Vector3 dir = (cameraHolder.right * h + cameraHolder.forward * v).normalized;
+        rb.AddForce(dir * speed * 0.5f, ForceMode.Acceleration);
+        // Cap air speed
+        Vector3 flatVel = rb.linearVelocity;
+        if (flatVel.magnitude > speed)
+            rb.linearVelocity = flatVel.normalized * speed;
+    }
+    else
+    {
+        // Ground movement — yaw only
+        Vector3 dir = (transform.right * h + transform.forward * v).normalized;
+        Vector3 targetVelocity = dir * speed;
+        targetVelocity.y = rb.linearVelocity.y;
+        rb.linearVelocity = targetVelocity;
+    }
+}
 
-        float h = Input.GetAxisRaw("Horizontal");
-        float v = Input.GetAxisRaw("Vertical");
 
-        float speed = moveSpeed;
-        if (Input.GetKey(KeyCode.LeftShift)) speed *= sprintMultiplier;
-
+    void ApplyWallGravity()
+    {
         if (isWallRunning)
-        {
-            // Move along the wall as if it's ground
-            Vector3 wallUp = -wallNormal; // into the wall = down on wall
-            Vector3 wallForward = Vector3.Cross(wallNormal, transform.up).normalized;
-            Vector3 wallRight = Vector3.Cross(wallForward, -wallNormal).normalized;
-
-            Vector3 dir = (wallRight * h + wallForward * v).normalized;
-            rb.linearVelocity = dir * speed;
-
-            // Apply gravity toward the wall
-            rb.AddForce(wallNormal * -wallGravity, ForceMode.Acceleration);
-        }
-        else
-        {
-            Vector3 dir = (transform.right * h + transform.forward * v).normalized;
-            Vector3 targetVelocity = dir * speed;
-            targetVelocity.y = rb.linearVelocity.y;
-            rb.linearVelocity = targetVelocity;
-        }
+            rb.AddForce(-wallNormal * wallGravity, ForceMode.Acceleration);
     }
 
     void HandleJump()
     {
+        if (isStunned) return;
+
         if (Input.GetKeyDown(KeyCode.Space))
         {
             if (isGrounded)
             {
+                hasLanded = false;
+                savedLandingScore = 0f;
                 rb.linearVelocity = new Vector3(rb.linearVelocity.x, 0, rb.linearVelocity.z);
                 rb.AddForce(Vector3.up * jumpForce, ForceMode.Impulse);
                 isAirborne = true;
             }
             else if (isWallRunning || isOnWall)
             {
-                // Launch away from wall + momentum + up
-                Vector3 jumpDir = wallNormal;
-                jumpDir += rb.linearVelocity.normalized * 0.5f;
-                jumpDir.y = 0;
-                jumpDir.Normalize();
-
+                hasLanded = false;
+                savedLandingScore = 0f;
+                Vector3 jumpDir = (wallNormal + Vector3.up).normalized;
                 rb.linearVelocity = Vector3.zero;
                 rb.AddForce(jumpDir * wallJumpForce + Vector3.up * wallJumpUpForce, ForceMode.Impulse);
-
-                // Exit wall run
                 ExitWallRun();
                 isAirborne = true;
             }
@@ -165,11 +182,14 @@ public class PlayerController : MonoBehaviour
 
     void HandleDash()
     {
+        if (isStunned) return;
+
         if (Input.GetKeyDown(KeyCode.LeftControl) && dashTimer <= 0)
         {
-            Vector3 dashDir = transform.forward;
             float h = Input.GetAxisRaw("Horizontal");
             float v = Input.GetAxisRaw("Vertical");
+
+            Vector3 dashDir = transform.forward;
             if (h != 0 || v != 0)
                 dashDir = (transform.right * h + transform.forward * v).normalized;
 
@@ -182,112 +202,159 @@ public class PlayerController : MonoBehaviour
     void HandleRecovery()
     {
         if (landingRecovery > 0)
-        {
             landingRecovery -= Time.deltaTime;
-            verticalLook = Mathf.Lerp(verticalLook, 0f, Time.deltaTime * (1f / recoveryDuration) * 3f);
-            cameraHolder.localRotation = Quaternion.Euler(verticalLook, 0, 0);
+
+        if (recoveryAvailable)
+        {
+            recoveryTimer -= Time.deltaTime;
+            if (recoveryTimer <= 0)
+            {
+                recoveryAvailable = false;
+                recoveryUsed = false;
+                hud.HideRecovery();
+            }
         }
     }
 
-    void HandleWallRun()
+    void HandleStun()
     {
-        if (!isWallRunning) return;
+        if (isStunned)
+        {
+            stunTimer -= Time.deltaTime;
+            if (stunTimer <= 0)
+            {
+                isStunned = false;
+                hud.HideStun();
+            }
+        }
+    }
 
-        wallRunTimer -= Time.deltaTime;
+    void HandleRecoveryInput()
+    {
+        if (Input.GetKeyDown(KeyCode.E) && recoveryAvailable && !recoveryUsed)
+        {
+            recoveryUsed = true;
+            recoveryAvailable = false;
+            hud.HideRecovery();
+            hud.ShowLanding("RECOVERY!");
+        }
+    }
 
-        // Smoothly rotate player to treat wall as floor
-        Quaternion wallOrientation = Quaternion.LookRotation(
-            Vector3.Cross(wallNormal, Vector3.up),
-            -wallNormal
-        );
-        transform.rotation = Quaternion.Slerp(transform.rotation, wallOrientation, Time.deltaTime * wallOrientSpeed);
+    void CheckDangerousLanding()
+    {
+        if (!isAirborne || isWallRunning) return;
 
-        if (wallRunTimer <= 0)
-            ExitWallRun();
+        float fallSpeed = -rb.linearVelocity.y;
+        if (fallSpeed < dangerFallSpeed) return;
+
+        float score = CalculateLandingScore();
+
+        RaycastHit hit;
+        float timeToGround = float.MaxValue;
+        if (Physics.Raycast(transform.position, Vector3.down, out hit, 100f))
+            timeToGround = hit.distance / fallSpeed;
+
+        if (score > badLandingThreshold && timeToGround < recoveryWindow && !recoveryAvailable && !recoveryUsed)
+        {
+            recoveryAvailable = true;
+            recoveryTimer = timeToGround;
+            hud.ShowRecovery();
+        }
+    }
+
+    void CheckGrounded()
+    {
+        if (isWallRunning)
+        {
+            isGrounded = false;
+            return;
+        }
+
+        isGrounded = Physics.Raycast(transform.position, Vector3.down, 1.1f);
+        if (!isGrounded)
+            isAirborne = true;
+        else
+            isAirborne = false;
     }
 
     void ExitWallRun()
     {
         isWallRunning = false;
         rb.useGravity = true;
-
-        // Smoothly snap player rotation back to upright
-        transform.rotation = Quaternion.Euler(0, transform.eulerAngles.y, 0);
+        targetCameraRoll = 0f;
+        isOnWall = false;
     }
 
-    void CheckGrounded()
-    {
-        isGrounded = Physics.Raycast(transform.position, Vector3.down, 1.1f);
-        if (!isGrounded)
-            isAirborne = true;
-        else
-        {
-            if (isWallRunning) ExitWallRun();
-            isAirborne = false;
-        }
-    }
-
-    void CheckWall()
+    void OnCollisionStay(Collision col)
     {
         if (isGrounded) return;
 
-        RaycastHit hit;
-        Vector3[] directions = { transform.right, -transform.right, transform.forward };
-
-        isOnWall = false;
-
-        foreach (Vector3 dir in directions)
+        foreach (ContactPoint contact in col.contacts)
         {
-            if (Physics.Raycast(transform.position, dir, out hit, wallCheckDistance))
+            if (Mathf.Abs(Vector3.Dot(contact.normal, Vector3.up)) < 0.3f)
             {
                 isOnWall = true;
-                wallNormal = hit.normal;
+                wallNormal = contact.normal;
 
-                if (!isWallRunning && rb.linearVelocity.magnitude > 2f)
+                if (!isWallRunning)
                 {
                     isWallRunning = true;
-                    wallRunTimer = wallRunTime;
                     rb.useGravity = false;
-                    rb.linearVelocity = new Vector3(rb.linearVelocity.x, 0, rb.linearVelocity.z);
+                    rb.linearVelocity = Vector3.ProjectOnPlane(rb.linearVelocity, wallNormal);
+                    targetCameraRoll = Vector3.Dot(wallNormal, -transform.right) > 0 ? 90f : -90f;
                 }
                 return;
             }
         }
+    }
 
+    void OnCollisionExit(Collision col)
+    {
         isOnWall = false;
         if (isWallRunning) ExitWallRun();
     }
 
     float CalculateLandingScore()
     {
-        float verticalAngle = Vector3.Angle(cameraHolder.forward, Vector3.down);
-        float verticalScore = verticalAngle / 180f;
-
-        Vector3 moveDir = new Vector3(rb.linearVelocity.x, 0, rb.linearVelocity.z).normalized;
-        Vector3 facingDir = new Vector3(transform.forward.x, 0, transform.forward.z).normalized;
-        float horizontalAngle = Vector3.Angle(facingDir, moveDir);
-        float horizontalScore = 1f - (horizontalAngle / 180f);
-
-        float combined = (verticalScore * 0.7f) + (horizontalScore * 0.3f);
-
-        if (verticalScore < 0.33f && horizontalScore > 0.8f)
-            return Mathf.Max(combined, 0.34f);
-
-        return combined;
+        Vector3 velDir = rb.linearVelocity.normalized;
+        float camVelAngle = Vector3.Angle(cameraHolder.forward, velDir) / 180f;
+        float fallSpeed = Mathf.Clamp01(-rb.linearVelocity.y / (dangerFallSpeed * 2f));
+        return Mathf.Clamp01((camVelAngle * 0.6f) + (fallSpeed * 0.4f));
     }
 
     void OnCollisionEnter(Collision col)
     {
+        if (isStunned) return;
+        if (hasLanded) return;
+
         if (col.relativeVelocity.y > 2f)
         {
-            float score = CalculateLandingScore();
+            hasLanded = true;
+
+            // Use saved score from while falling, not current velocity
+            float score = savedLandingScore;
+
+            if (recoveryUsed)
+            {
+                // Player successfully recovered
+                recoveryUsed = false;
+                recoveryAvailable = false;
+                cameraRoll = 0f;
+                targetCameraRoll = 0f;
+                verticalLook = Mathf.Clamp(verticalLook, -80f, 80f);
+                hud.ShowLanding("CLEAN LANDING");
+                return;
+            }
 
             if (score > veryBadLandingThreshold)
             {
-                recoveryDuration = 1.2f;
-                landingRecovery = recoveryDuration;
-                rb.linearVelocity *= 0.2f;
-                hud.ShowLanding("VERY BAD LANDING");
+                // Always stun on very bad landing — recovery was your chance to avoid it
+                recoveryAvailable = false;
+                isStunned = true;
+                stunTimer = 2f;
+                rb.linearVelocity = Vector3.zero;
+                hud.ShowStun();
+                hud.HideRecovery();
             }
             else if (score > badLandingThreshold)
             {
@@ -299,7 +366,8 @@ public class PlayerController : MonoBehaviour
             else
             {
                 verticalLook = Mathf.Clamp(verticalLook, -80f, 80f);
-                cameraHolder.localRotation = Quaternion.Euler(verticalLook, 0, 0);
+                cameraRoll = 0f;
+                targetCameraRoll = 0f;
                 hud.ShowLanding("CLEAN LANDING");
             }
         }
